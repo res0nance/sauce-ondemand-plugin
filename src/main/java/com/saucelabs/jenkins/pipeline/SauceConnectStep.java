@@ -1,7 +1,7 @@
 package com.saucelabs.jenkins.pipeline;
 
 import com.cloudbees.plugins.credentials.common.StandardUsernameListBoxModel;
-import com.google.inject.Inject;
+import com.google.common.collect.ImmutableSet;
 import com.saucelabs.ci.sauceconnect.AbstractSauceTunnelManager;
 import com.saucelabs.ci.sauceconnect.SauceConnectFourManager;
 import com.saucelabs.jenkins.HudsonSauceManagerFactory;
@@ -22,26 +22,25 @@ import hudson.plugins.sauce_ondemand.credentials.SauceCredentials;
 import hudson.util.ListBoxModel;
 import jenkins.security.MasterToSlaveCallable;
 import org.apache.commons.lang.StringUtils;
-import org.jenkinsci.plugins.workflow.steps.AbstractStepDescriptorImpl;
-import org.jenkinsci.plugins.workflow.steps.AbstractStepExecutionImpl;
-import org.jenkinsci.plugins.workflow.steps.AbstractStepImpl;
-import org.jenkinsci.plugins.workflow.steps.BodyExecution;
 import org.jenkinsci.plugins.workflow.steps.BodyExecutionCallback;
 import org.jenkinsci.plugins.workflow.steps.EnvironmentExpander;
+import org.jenkinsci.plugins.workflow.steps.Step;
 import org.jenkinsci.plugins.workflow.steps.StepContext;
-import org.jenkinsci.plugins.workflow.steps.StepContextParameter;
+import org.jenkinsci.plugins.workflow.steps.StepDescriptor;
+import org.jenkinsci.plugins.workflow.steps.StepExecution;
+import org.jenkinsci.plugins.workflow.steps.SynchronousNonBlockingStepExecution;
 import org.kohsuke.stapler.AncestorInPath;
 import org.kohsuke.stapler.DataBoundConstructor;
 import org.kohsuke.stapler.DataBoundSetter;
 
-import javax.annotation.Nonnull;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.Set;
 
 import static com.saucelabs.jenkins.pipeline.SauceConnectStep.SauceConnectStepExecution.getSauceTunnelManager;
 
-public class SauceConnectStep extends AbstractStepImpl {
+public class SauceConnectStep extends Step {
     private Boolean verboseLogging = false;
     private Boolean useLatestSauceConnect = false;
     private Boolean useGeneratedTunnelIdentifier = false;
@@ -52,7 +51,8 @@ public class SauceConnectStep extends AbstractStepImpl {
     public SauceConnectStep() {
     }
 
-    public SauceConnectStep(String options, Boolean verboseLogging, Boolean useLatestSauceConnect, Boolean useGeneratedTunnelIdentifier, String sauceConnectPath) {
+    public SauceConnectStep(String options, Boolean verboseLogging, Boolean useLatestSauceConnect,
+            Boolean useGeneratedTunnelIdentifier, String sauceConnectPath) {
         this.verboseLogging = verboseLogging;
         this.useLatestSauceConnect = useLatestSauceConnect;
         this.useGeneratedTunnelIdentifier = useGeneratedTunnelIdentifier;
@@ -60,6 +60,10 @@ public class SauceConnectStep extends AbstractStepImpl {
         this.options = StringUtils.trimToEmpty(options);
     }
 
+    @Override
+    public StepExecution start(StepContext context) throws Exception {
+        return new SauceConnectStepExecution(context);
+    }
 
     public String getOptions() {
         return options;
@@ -106,32 +110,37 @@ public class SauceConnectStep extends AbstractStepImpl {
         this.verboseLogging = verboseLogging;
     }
 
+    @Extension
+    public static final class DescriptorImpl extends StepDescriptor {
 
-    @Extension public static final class DescriptorImpl extends AbstractStepDescriptorImpl {
-        public DescriptorImpl() {
-            super(SauceConnectStepExecution.class);
-        }
-
-        @Override public String getDisplayName() {
+        @Override
+        public String getDisplayName() {
             return "Sauce Connect";
         }
 
-        @Override public String getFunctionName() {
+        @Override
+        public String getFunctionName() {
             return "sauceconnect";
         }
 
-        @Override public boolean takesImplicitBlockArgument() {
+        @Override
+        public boolean takesImplicitBlockArgument() {
             return true;
         }
 
         public ListBoxModel doFillCredentialsIdItems(final @AncestorInPath Item project) {
-            return new StandardUsernameListBoxModel()
-                .withAll(SauceCredentials.all(project));
+            return new StandardUsernameListBoxModel().withAll(SauceCredentials.all(project));
+        }
+
+        @Override
+        public Set<? extends Class<?>> getRequiredContext() {
+            return ImmutableSet.of(Run.class, TaskListener.class, Computer.class, SauceCredentials.class);
         }
 
     }
 
-    private static final class SauceStartConnectHandler extends MasterToSlaveCallable<Void, AbstractSauceTunnelManager.SauceConnectException> {
+    private static final class SauceStartConnectHandler
+            extends MasterToSlaveCallable<Void, AbstractSauceTunnelManager.SauceConnectException> {
         private final SauceCredentials sauceCredentials;
         private final int port;
         private final String options;
@@ -140,7 +149,8 @@ public class SauceConnectStep extends AbstractStepImpl {
         private final String sauceConnectPath;
         private final Boolean useLatestSauceConnect;
 
-        SauceStartConnectHandler(SauceCredentials sauceCredentials, int port, String options, TaskListener listener, Boolean verboseLogging, String sauceConnectPath, Boolean useLatestSauceConnect) {
+        SauceStartConnectHandler(SauceCredentials sauceCredentials, int port, String options, TaskListener listener,
+                Boolean verboseLogging, String sauceConnectPath, Boolean useLatestSauceConnect) {
             this.sauceCredentials = sauceCredentials;
             this.port = port;
             this.options = options;
@@ -155,22 +165,15 @@ public class SauceConnectStep extends AbstractStepImpl {
             SauceConnectFourManager sauceTunnelManager = getSauceTunnelManager();
             sauceTunnelManager.setSauceRest(sauceCredentials.getSauceREST());
             sauceTunnelManager.setUseLatestSauceConnect(useLatestSauceConnect);
-            sauceTunnelManager.openConnection(
-                sauceCredentials.getUsername(),
-                sauceCredentials.getApiKey().getPlainText(),
-                port,
-                null, /*sauceConnectJar,*/
-                options,
-                listener.getLogger(),
-                verboseLogging,
-                sauceConnectPath
-            );
+            sauceTunnelManager.openConnection(sauceCredentials.getUsername(),
+                    sauceCredentials.getApiKey().getPlainText(), port, null, /* sauceConnectJar, */
+                    options, listener.getLogger(), verboseLogging, sauceConnectPath);
             return null;
         }
     }
 
-
-    private static final class SauceStopConnectHandler extends MasterToSlaveCallable<Void, AbstractSauceTunnelManager.SauceConnectException> {
+    private static final class SauceStopConnectHandler
+            extends MasterToSlaveCallable<Void, AbstractSauceTunnelManager.SauceConnectException> {
         private final SauceCredentials sauceCredentials;
         private final String options;
         private final TaskListener listener;
@@ -185,47 +188,40 @@ public class SauceConnectStep extends AbstractStepImpl {
         public Void call() throws AbstractSauceTunnelManager.SauceConnectException {
             SauceConnectFourManager sauceTunnelManager = getSauceTunnelManager();
             sauceTunnelManager.setSauceRest(sauceCredentials.getSauceREST());
-            sauceTunnelManager.closeTunnelsForPlan(
-                sauceCredentials.getUsername(),
-                options,
-                listener.getLogger()
-            );
+            sauceTunnelManager.closeTunnelsForPlan(sauceCredentials.getUsername(), options, listener.getLogger());
             return null;
         }
     }
 
     @SuppressFBWarnings("SE_NO_SERIALVERSIONID")
-    public static class SauceConnectStepExecution extends AbstractStepExecutionImpl {
-        @Inject(optional=true) private transient SauceConnectStep step;
-        @StepContextParameter private transient SauceCredentials sauceCredentials;
-        @StepContextParameter private transient Computer computer;
-        @StepContextParameter private transient Run<?,?> run;
-        @StepContextParameter private transient TaskListener listener;
+    public static class SauceConnectStepExecution extends SynchronousNonBlockingStepExecution<Void> {
+        private transient SauceConnectStep step;
 
-        private BodyExecution body;
+        public SauceConnectStepExecution(StepContext context) {
+            super(context);
+        }
 
         @Override
-        public boolean start() throws Exception {
-            Job<?,?> job = run.getParent();
+        public Void run() throws Exception {
+            Job<?, ?> job = getContext().get(Run.class).getParent();
             if (!(job instanceof TopLevelItem)) {
                 throw new Exception(job + " must be a top-level job");
             }
+            Computer computer = getContext().get(Computer.class);
             Node node = computer.getNode();
             if (node == null) {
                 throw new Exception("computer does not correspond to a live node");
             }
-            int port = computer.getChannel().call(
-                new SauceOnDemandBuildWrapper.GetAvailablePort()
-            );
+            int port = computer.getChannel().call(new SauceOnDemandBuildWrapper.GetAvailablePort());
 
-            ArrayList<String> optionsArray = new ArrayList<String>();
+            ArrayList<String> optionsArray = new ArrayList<>();
             optionsArray.add(PluginImpl.get().getSauceConnectOptions());
             optionsArray.add(step.getOptions());
             optionsArray.removeAll(Collections.singleton("")); // remove the empty strings
 
             String options = StringUtils.join(optionsArray, " ");
 
-            HashMap<String,String> overrides = new HashMap<String,String>();
+            HashMap<String, String> overrides = new HashMap<>();
             overrides.put(SauceOnDemandBuildWrapper.SELENIUM_PORT, String.valueOf(port));
             overrides.put(SauceOnDemandBuildWrapper.SELENIUM_HOST, "localhost");
 
@@ -236,39 +232,26 @@ public class SauceConnectStep extends AbstractStepImpl {
 
             }
 
+            SauceCredentials sauceCredentials = getContext().get(SauceCredentials.class);
+
             final String restEndpoint = sauceCredentials.getRestEndpoint();
 
             overrides.put(SauceOnDemandBuildWrapper.SAUCE_REST_ENDPOINT, restEndpoint);
             options = options + " -x " + restEndpoint + "rest/v1";
 
+            TaskListener listener = getContext().get(TaskListener.class);
             listener.getLogger().println("Starting sauce connect");
 
-            SauceStartConnectHandler handler = new SauceStartConnectHandler(
-                sauceCredentials,
-                port,
-                options,
-                listener,
-                step.getVerboseLogging(),
-                step.getSauceConnectPath(),
-                step.getUseLatestSauceConnect()
-            );
+            SauceStartConnectHandler handler = new SauceStartConnectHandler(sauceCredentials, port, options, listener,
+                    step.getVerboseLogging(), step.getSauceConnectPath(), step.getUseLatestSauceConnect());
             computer.getChannel().call(handler);
 
-            body = getContext().newBodyInvoker()
-                .withContext(EnvironmentExpander.merge(getContext().get(EnvironmentExpander.class), new ExpanderImpl(overrides)))
-                .withCallback(new Callback(sauceCredentials, options))
-                .withDisplayName(null)
-                .start();
+            getContext().newBodyInvoker()
+                    .withContext(EnvironmentExpander.merge(getContext().get(EnvironmentExpander.class),
+                            new ExpanderImpl(overrides)))
+                    .withCallback(new Callback(sauceCredentials, options)).withDisplayName(null).start();
 
-            return false;
-        }
-
-        @Override
-        public void stop(@Nonnull Throwable cause) throws Exception {
-            if (body!=null) {
-                body.cancel(cause);
-            }
-
+            return null;
         }
 
         public static SauceConnectFourManager getSauceTunnelManager() {
@@ -280,24 +263,23 @@ public class SauceConnectStep extends AbstractStepImpl {
             private final String options;
             private final SauceCredentials sauceCredentials;
 
-
             Callback(SauceCredentials sauceCredentials, String options) {
                 this.sauceCredentials = sauceCredentials;
                 this.options = options;
             }
 
-            @Override protected void finished(StepContext context) throws Exception {
+            @Override
+            protected void finished(StepContext context) throws Exception {
                 TaskListener listener = context.get(TaskListener.class);
                 Computer computer = context.get(Computer.class);
 
-                SauceStopConnectHandler stopConnectHandler = new SauceStopConnectHandler(
-                    sauceCredentials,
-                    options,
-                    listener
-                );
+                SauceStopConnectHandler stopConnectHandler = new SauceStopConnectHandler(sauceCredentials, options,
+                        listener);
                 computer.getChannel().call(stopConnectHandler);
             }
 
         }
     }
+
+   
 }

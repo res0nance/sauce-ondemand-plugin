@@ -2,36 +2,36 @@ package com.saucelabs.jenkins.pipeline;
 
 import com.cloudbees.plugins.credentials.CredentialsProvider;
 import com.cloudbees.plugins.credentials.common.StandardUsernameListBoxModel;
-import com.google.inject.Inject;
+import com.google.common.collect.ImmutableSet;
 import hudson.Extension;
 import hudson.Util;
 import hudson.model.Item;
 import hudson.model.Job;
 import hudson.model.Run;
+import hudson.model.TaskListener;
 import hudson.model.TopLevelItem;
 import hudson.plugins.sauce_ondemand.SauceEnvironmentUtil;
 import hudson.plugins.sauce_ondemand.SauceOnDemandBuildAction;
 import hudson.plugins.sauce_ondemand.SauceOnDemandBuildWrapper;
 import hudson.plugins.sauce_ondemand.credentials.SauceCredentials;
 import hudson.util.ListBoxModel;
-import org.jenkinsci.plugins.workflow.steps.AbstractStepDescriptorImpl;
-import org.jenkinsci.plugins.workflow.steps.AbstractStepExecutionImpl;
-import org.jenkinsci.plugins.workflow.steps.AbstractStepImpl;
-import org.jenkinsci.plugins.workflow.steps.BodyExecution;
 import org.jenkinsci.plugins.workflow.steps.BodyExecutionCallback;
 import org.jenkinsci.plugins.workflow.steps.EnvironmentExpander;
-import org.jenkinsci.plugins.workflow.steps.StepContextParameter;
+import org.jenkinsci.plugins.workflow.steps.Step;
+import org.jenkinsci.plugins.workflow.steps.StepContext;
+import org.jenkinsci.plugins.workflow.steps.StepDescriptor;
+import org.jenkinsci.plugins.workflow.steps.StepExecution;
+import org.jenkinsci.plugins.workflow.steps.SynchronousNonBlockingStepExecution;
 import org.kohsuke.stapler.AncestorInPath;
 import org.kohsuke.stapler.DataBoundConstructor;
 import org.kohsuke.stapler.export.ExportedBean;
 
-import javax.annotation.Nonnull;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Set;
 
 @ExportedBean
-public class SauceStep extends AbstractStepImpl {
+public class SauceStep extends Step {
     private String credentialsId;
 
     @DataBoundConstructor
@@ -43,15 +43,24 @@ public class SauceStep extends AbstractStepImpl {
         return credentialsId;
     }
 
-    public static class Execution extends AbstractStepExecutionImpl {
+    @Override
+    public StepExecution start(StepContext context) {
+        return new Execution(this, context);
+    }
+
+    public static class Execution extends SynchronousNonBlockingStepExecution<Void> {
         private static final long serialVersionUID = 1;
 
-        @Inject(optional=true) private transient SauceStep step;
-        @StepContextParameter private transient Run<?,?> run;
+        private transient SauceStep step;
 
-        private BodyExecution body;
+        public Execution(SauceStep sauceStep, StepContext context) {
+            super(context);
+            step = sauceStep;
+        }
 
-        @Override public boolean start() throws Exception {
+        @Override
+        protected Void run() throws Exception {
+            Run<?,?> run = getContext().get(Run.class);
             Job<?,?> job = run.getParent();
             if (!(job instanceof TopLevelItem)) {
                 throw new Exception(job + " must be a top-level job");
@@ -77,29 +86,20 @@ public class SauceStep extends AbstractStepImpl {
                 run.addAction(buildAction);
             }
 
-            body = getContext().newBodyInvoker()
+            getContext().newBodyInvoker()
                 .withContext(credentials)
                 .withContext(EnvironmentExpander.merge(getContext().get(EnvironmentExpander.class), new ExpanderImpl(overrides)))
                 .withCallback(BodyExecutionCallback.wrap(getContext()))
                 .start();
-            return false;
-        }
 
-        @Override public void stop(@Nonnull Throwable cause) throws Exception {
-            // should be no need to do anything special (but verify in JENKINS-26148)
-            if (body!=null) {
-                body.cancel(cause);
-            }
+            return null;
         }
 
     }
 
 
     @Extension
-    public static final class DescriptorImpl extends AbstractStepDescriptorImpl {
-        public DescriptorImpl() {
-            super(Execution.class);
-        }
+    public static final class DescriptorImpl extends StepDescriptor {
 
         @Override public String getDisplayName() {
             return "Sauce";
@@ -122,6 +122,11 @@ public class SauceStep extends AbstractStepImpl {
         public ListBoxModel doFillCredentialsIdItems(final @AncestorInPath Item project) {
             return new StandardUsernameListBoxModel()
                 .withAll(SauceCredentials.all(project));
+        }
+
+        @Override
+        public Set<? extends Class<?>> getRequiredContext() {
+            return ImmutableSet.of(TaskListener.class, Run.class);
         }
 
     }
